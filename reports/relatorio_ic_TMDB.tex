@@ -1,0 +1,286 @@
+% Relatório técnico — Projeto de Inteligência Computacional
+% Regressão da nota média (vote_average) em dados TMDB
+% Compilar: pdflatex relatorio_ic_TMDB.tex (duas vezes se usar refs)
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[utf8]{inputenc}
+% Idioma: texto em português (UTF-8). Sem babel para compatibilidade com instalações TeX mínimas.
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{amsmath}
+\usepackage{caption}
+\usepackage{float}
+
+\geometry{margin=2.5cm}
+\hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue, citecolor=blue}
+
+\title{\textbf{Regressão da nota média de filmes (TMDB):\\pré-processamento, modelagem e avaliação}}
+\author{Autor(a) --- Engenharia de Computação\\CEFET-MG Campus Divinópolis\\Orientação: Prof. Alisson Marques da Silva}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Este relatório descreve um experimento completo de análise e regressão sobre dados de filmes do TMDB, com objetivo de prever a variável alvo \texttt{vote\_average}. A base bruta foi filtrada e transformada; features numéricas e categóricas de alta cardinalidade foram tratadas; em seguida foram avaliados um preditor trivial (baseline), regressão linear regularizada (Ridge), Random Forest e \emph{HistGradientBoosting}. Os resultados foram consolidados no conjunto de teste (métricas MAE, RMSE e $R^2$), com validação cruzada no treino para o melhor modelo, análise de importância e exemplos de filmes reais do hold-out. Os valores numéricos das tabelas de exemplos de filmes foram reproduzidos com o mesmo arquivo processado e o mesmo \texttt{random\_state} do split utilizado no notebook de modelagem.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%==============================================================================
+\section{Introdução e objetivo}
+%==============================================================================
+
+O objetivo do trabalho é construir um modelo de \textbf{regressão} capaz de estimar a \textbf{nota média} atribuída pelos usuários (\texttt{vote\_average}) a partir de atributos tabulares de filmes. O problema é relevante para disciplina de Inteligência Computacional por exigir um fluxo reprodutível: obtenção dos dados, limpeza, transformações justificadas, definição de métricas e comparação de algoritmos.
+
+O relatório acompanha a estrutura dos notebooks desenvolvidos: (1) pré-processamento e análise exploratória; (2) modelagem, avaliação e estudos complementares.
+
+%==============================================================================
+\section{Dados e definição do problema}
+%==============================================================================
+
+\subsection{Fonte e escopo}
+Utilizou-se o conjunto de filmes \textbf{TMDB} (arquivo \texttt{TMDB\_movie\_dataset\_v11.csv} na pasta de dados brutos). A variável alvo é contínua (\texttt{vote\_average}), em escala típica de 0 a 10.
+
+\subsection{Filtros de integridade}
+Para reduzir ruído e valores ausentes disfarçados de zero, aplicaram-se critérios alinhados à boa prática em dados de plataformas:
+\begin{itemize}
+  \item \textbf{\texttt{vote\_count} $> 50$}: notas com poucos votos são instáveis; exige-se um mínimo de participação.
+  \item \textbf{\texttt{budget} $> 0$ e \texttt{revenue} $> 0$}: valores zero costumam indicar ausência de informação, não verdadeiro zero econômico.
+  \item Remoção de linhas com valores ausentes nas colunas selecionadas após o recorte de colunas.
+\end{itemize}
+
+Após os filtros, permanecem \textbf{7.761} registros, número consistente com o relatório de pré-processamento.
+
+\subsection{Variáveis utilizadas}
+Além das numéricas (\texttt{runtime}, \texttt{vote\_count}, \texttt{log\_budget}, \texttt{log\_revenue}, \texttt{log\_popularity}, ano derivado de \texttt{release\_date}), foram incorporadas representações categóricas:
+\begin{itemize}
+  \item \textbf{Gêneros}: codificação \emph{multilabel} por presença dos top-$K$ gêneros mais frequentes ($K=15$).
+  \item \textbf{Produtoras}: top-$K$ empresas ($K=20$) e coluna binária \texttt{company\_other} para produtoras fora do conjunto frequente.
+\end{itemize}
+
+Variáveis brutas \texttt{budget}, \texttt{revenue} e \texttt{popularity} foram substituídas por versões em escala logarítmica (\texttt{log\_*}), e as colunas textuais \texttt{genres} e \texttt{production\_companies} não entram no modelo após o \emph{encoding} (evita redundância e dimensão desnecessária).
+
+%==============================================================================
+\section{Pré-processamento (Notebook 01)}
+%==============================================================================
+
+\subsection{Transformações}
+\begin{itemize}
+  \item \textbf{Logaritmo}: aplicado a \texttt{budget}, \texttt{revenue} e \texttt{popularity} para reduzir assimetria e estabilizar relações com a alvo.
+  \item \textbf{Ano}: extraído de \texttt{release\_date} para capturar tendência temporal.
+  \item \textbf{Nomes de colunas derivadas}: função auxiliar para nomes seguros de colunas \emph{one-hot} (gêneros e produtoras).
+\end{itemize}
+
+\subsection{Análise exploratória (gráficos)}
+Os gráficos gerados no notebook apoiam as decisões acima:
+\begin{itemize}
+  \item \textbf{Histograma de \texttt{vote\_average}}: mostra concentração típica da nota em torno de valores intermediários; a variância da alvo é limitada, o que afeta o $R^2$ alcançável.
+  \item \textbf{Boxplots de \texttt{budget} e \texttt{revenue}}: em escala linear, \emph{outliers} extremos; em escala log, visualização mais clara do ``miolo'' da distribuição --- reforça o uso de log nas features.
+  \item \textbf{Matriz de correlação}: variáveis numéricas têm correlação linear moderada com a nota; relações não lineares e interações justificam modelos de árvore e boosting.
+  \item \textbf{Dispersões} (\texttt{budget}, \texttt{revenue}, \texttt{runtime}, \texttt{popularity} vs.\ nota): em escala log no eixo $x$, a relação costuma aparecer mais homogênea para variáveis financeiras.
+\end{itemize}
+
+\subsection{Artefato salvo}
+O dataset processado foi exportado para \texttt{data/processed/movies\_processed.csv}, utilizado no notebook seguinte.
+
+%==============================================================================
+\section{Modelagem experimental (Notebook 02)}
+%==============================================================================
+
+\subsection{Divisão treino / teste}
+Utilizou-se \texttt{train\_test\_split} com \textbf{20\%} para teste e \texttt{random\_state=42} para reprodutibilidade. O mesmo particionamento é usado para todos os modelos.
+
+\subsection{Baseline}
+Preditor \textbf{constante}: para todo filme do teste, a predição é a \textbf{média de \texttt{vote\_average} no treino}. Não usa features; serve como referência mínima.
+
+\subsection{Modelos avaliados}
+\begin{itemize}
+  \item \textbf{Ridge}: \texttt{Pipeline} com \texttt{StandardScaler} + \texttt{Ridge} ($\alpha=1{,}0$).
+  \item \textbf{Random Forest}: \texttt{n\_estimators=200}.
+  \item \textbf{HistGradientBoosting}: \texttt{max\_iter=200}.
+\end{itemize}
+
+\subsection{Métricas}
+\begin{itemize}
+  \item \textbf{MAE} (erro absoluto médio): interpreta-se em ``pontos'' na escala da nota.
+  \item \textbf{RMSE}: penaliza erros grandes.
+  \item \textbf{$R^2$}: fração da variância explicada (complementar ao MAE no contexto de nota subjetiva).
+\end{itemize}
+
+%==============================================================================
+\section{Resultados numéricos (conjunto de teste)}
+%==============================================================================
+
+\subsection{Tabela comparativa}
+A Tabela~\ref{tab:comparacao} resume o desempenho no \textbf{teste}. O melhor modelo segundo o MAE é o \textbf{HistGradientBoosting}.
+
+\begin{table}[H]
+  \centering
+  \caption{Comparação de modelos --- conjunto de teste (métricas arredondadas).}
+  \label{tab:comparacao}
+  \begin{tabular}{lccc}
+    \toprule
+    \textbf{Modelo} & \textbf{MAE} & \textbf{RMSE} & \textbf{$R^2$} \\
+    \midrule
+    HistGradientBoosting (\texttt{max\_iter}=200) & 0{,}3994 & 0{,}5502 & 0{,}5749 \\
+    Random Forest (\texttt{n\_estimators}=200)   & 0{,}4207 & 0{,}5695 & 0{,}5446 \\
+    Ridge ($\alpha=1{,}0$)                        & 0{,}4817 & 0{,}6374 & 0{,}4295 \\
+    Baseline (média do treino)                    & 0{,}6718 & 0{,}8440 & $-0{,}0004$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\textbf{Análise:} há ganho forte do baseline em relação aos modelos com features (MAE cai de $\sim$0{,}67 para $\sim$0{,}40). O $R^2$ do \emph{HistGradientBoosting} indica que parte substancial da variância da nota é explicada pelas variáveis disponíveis, sem ser irrealisticamente alto (o que seria suspeito em dados de gosto).
+
+\subsection{Validação cruzada (treino)}
+No treino, foi aplicada validação cruzada (por exemplo, $k$-fold) ao \emph{HistGradientBoosting} para reportar média e desvio das métricas entre \emph{folds}. Isso mede \textbf{estabilidade} do modelo sem usar o conjunto de teste reservado; os números do teste permanecem o critério de generalização final em um único \emph{hold-out}.
+
+\subsection{Importância de features}
+A \textbf{permutation importance} (e/ou importâncias nativas do modelo) foi usada para interpretar quais variáveis mais influenciam o MAE quando perturbadas. Testes com subconjunto apenas das features mais importantes podem \textbf{piorar} levemente o desempenho, pois informação útil pode estar distribuída em várias colunas correlacionadas --- manter o modelo completo foi a decisão adotada.
+
+%==============================================================================
+\section{Visualizações (melhor modelo)}
+%==============================================================================
+
+Para o \emph{HistGradientBoosting}:
+\begin{itemize}
+  \item \textbf{Real vs.\ predito}: dispersão esperada em torno da diagonal; afastamentos indicam erros por filme.
+  \item \textbf{Resíduos vs.\ predito}: verifica viés sistemático; idealmente centrados em zero sem padrão em funil.
+  \item \textbf{Histograma dos resíduos} e \textbf{Q--Q}: avaliam a forma da distribuição dos erros em relação à normalidade (referência diagnóstica, não requisito do modelo).
+\end{itemize}
+
+%==============================================================================
+\section{Exemplos reais no conjunto de teste}
+%==============================================================================
+
+Para apresentação, foram recuperados títulos a partir do arquivo processado, alinhando-se aos índices do \texttt{y\_test}. As predições abaixo foram obtidas com o mesmo particionamento e o mesmo \emph{HistGradientBoosting} (\texttt{max\_iter}=200, \texttt{random\_state}=42) utilizado na reprodução deste relatório.
+
+\subsection{Top 10 filmes com maiores notas reais no teste}
+A Tabela~\ref{tab:top10} lista os dez filmes com maior \texttt{nota\_real} no conjunto de teste, com predição e erro (real $-$ predito).
+
+\begin{table}[H]
+  \centering
+  \caption{Dez filmes com maiores notas reais no conjunto de teste (modelo HistGradientBoosting).}
+  \label{tab:top10}
+  \small
+  \begin{tabular}{p{6.2cm}ccc}
+    \toprule
+    \textbf{Título} & \textbf{Real} & \textbf{Predito} & \textbf{Erro} \\
+    \midrule
+    The Shawshank Redemption & 8{,}702 & 8{,}515 & 0{,}187 \\
+    The Green Mile & 8{,}507 & 8{,}547 & $-0{,}040$ \\
+    Evanescence - Synthesis Live & 8{,}500 & 6{,}381 & 2{,}119 \\
+    The Good, the Bad and the Ugly & 8{,}473 & 8{,}072 & 0{,}401 \\
+    GoodFellas & 8{,}464 & 8{,}329 & 0{,}135 \\
+    Grave of the Fireflies & 8{,}455 & 8{,}345 & 0{,}110 \\
+    Cinema Paradiso & 8{,}453 & 7{,}841 & 0{,}612 \\
+    One Flew Over the Cuckoo's Nest & 8{,}420 & 8{,}227 & 0{,}193 \\
+    Howl's Moving Castle & 8{,}402 & 8{,}094 & 0{,}308 \\
+    The Lord of the Rings: The Fellowship of the Ring & 8{,}402 & 8{,}198 & 0{,}204 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\textbf{Análise:} a maioria dos erros é pequena em magnitude na escala 0--10; a linha \emph{Evanescence - Synthesis Live} apresenta erro maior e merece menção na banca: títulos atípicos (concerto/gravação) podem não seguir o mesmo padrão que filmes de ficção, e o modelo pode subestimar a nota.
+
+\subsection{Amostra das primeiras 50 linhas da tabela de comparação}
+A Tabela~\ref{tab:head50} reproduz a ideia do \texttt{head(50)} do \emph{DataFrame} de comparação (ordem das linhas do objeto), com título, nota real, nota predita e erro. Valores arredondados a três casas decimais.
+
+{\footnotesize
+\begin{longtable}{p{5.8cm}ccc}
+  \caption{Amostra de 50 filmes do conjunto de teste (primeiras linhas da tabela de comparação).}\label{tab:head50}\\
+  \toprule
+  \textbf{Título} & \textbf{Real} & \textbf{Predito} & \textbf{Erro} \\
+  \midrule
+  \endfirsthead
+  \multicolumn{4}{c}{\tablename\ \thetable{} --- continuação} \\
+  \toprule
+  \textbf{Título} & \textbf{Real} & \textbf{Predito} & \textbf{Erro} \\
+  \midrule
+  \endhead
+  \midrule
+  \multicolumn{4}{r}{\textit{Continua na próxima página}} \\
+  \endfoot
+  \bottomrule
+  \endlastfoot
+Remember Me & 7{,}102 & 7{,}391 & $-0{,}289$ \\
+The Rescuers Down Under & 6{,}616 & 6{,}461 & 0{,}155 \\
+Kramer vs. Kramer & 7{,}555 & 7{,}216 & 0{,}339 \\
+King Kong & 7{,}610 & 7{,}493 & 0{,}117 \\
+The Dressmaker & 6{,}992 & 6{,}924 & 0{,}068 \\
+Heaven's Gate & 6{,}740 & 6{,}765 & $-0{,}025$ \\
+Unfinished Business & 5{,}445 & 5{,}359 & 0{,}086 \\
+Sliver & 5{,}446 & 6{,}381 & $-0{,}935$ \\
+Babysitting 2 & 6{,}300 & 6{,}268 & 0{,}032 \\
+The Man with the Golden Arm & 7{,}159 & 6{,}956 & 0{,}203 \\
+The Glass Castle & 7{,}172 & 7{,}063 & 0{,}109 \\
+Instinct & 6{,}383 & 6{,}079 & 0{,}304 \\
+Man Bites Dog & 7{,}226 & 6{,}823 & 0{,}403 \\
+Idle Hands & 6{,}131 & 5{,}994 & 0{,}137 \\
+Gigli & 4{,}029 & 5{,}843 & $-1{,}814$ \\
+The Gray Man & 6{,}979 & 6{,}848 & 0{,}131 \\
+10 Things I Hate About You & 7{,}580 & 7{,}691 & $-0{,}111$ \\
+42nd Street & 6{,}901 & 6{,}817 & 0{,}084 \\
+The 33 & 6{,}357 & 6{,}819 & $-0{,}462$ \\
+The Bucket List & 7{,}181 & 6{,}727 & 0{,}454 \\
+Darkest Hour & 7{,}350 & 7{,}305 & 0{,}045 \\
+Everything Must Go & 6{,}153 & 6{,}371 & $-0{,}218$ \\
+Dark Water & 6{,}755 & 5{,}857 & 0{,}898 \\
+Little Manhattan & 7{,}175 & 6{,}321 & 0{,}854 \\
+BloodRayne 2: Deliverance & 4{,}046 & 5{,}282 & $-1{,}236$ \\
+The Postman Always Rings Twice & 6{,}533 & 6{,}579 & $-0{,}046$ \\
+High School & 5{,}700 & 5{,}082 & 0{,}618 \\
+A Million Ways to Die in the West & 6{,}008 & 6{,}470 & $-0{,}462$ \\
+Warriors of the Rainbow: Seediq Bale - Part 1: The Sun Flag & 7{,}347 & 6{,}669 & 0{,}678 \\
+Talladega Nights: The Ballad of Ricky Bobby & 6{,}346 & 5{,}875 & 0{,}471 \\
+Taps & 6{,}800 & 6{,}636 & 0{,}164 \\
+Let the Sunshine In & 5{,}243 & 6{,}154 & $-0{,}911$ \\
+Midnight in Paris & 7{,}535 & 6{,}653 & 0{,}882 \\
+Fur: An Imaginary Portrait of Diane Arbus & 6{,}079 & 6{,}665 & $-0{,}586$ \\
+La Femme Nikita & 7{,}093 & 7{,}121 & $-0{,}028$ \\
+Kantara & 7{,}352 & 7{,}239 & 0{,}113 \\
+Uncommon Valor & 6{,}170 & 6{,}181 & $-0{,}011$ \\
+Junior & 5{,}167 & 6{,}057 & $-0{,}890$ \\
+Domino & 5{,}929 & 6{,}268 & $-0{,}339$ \\
+Brick Mansions & 5{,}900 & 5{,}970 & $-0{,}070$ \\
+Never Back Down & 6{,}746 & 7{,}120 & $-0{,}374$ \\
+Deadfall & 5{,}900 & 5{,}875 & 0{,}025 \\
+Almost Heroes & 5{,}512 & 5{,}126 & 0{,}386 \\
+Suck Me Shakespeer & 7{,}024 & 6{,}876 & 0{,}148 \\
+I Smile Back & 6{,}205 & 6{,}441 & $-0{,}236$ \\
+25th Hour & 7{,}332 & 7{,}685 & $-0{,}353$ \\
+Last Knights & 6{,}453 & 5{,}962 & 0{,}491 \\
+{Hello, My Name Is Doris} & 6{,}447 & 6{,}737 & $-0{,}290$ \\
+Cocoon & 6{,}602 & 6{,}647 & $-0{,}045$ \\
+Young Adult & 5{,}796 & 6{,}473 & $-0{,}677$ \\
+\end{longtable}
+}
+
+%==============================================================================
+\section{Discussão e limitações}
+%==============================================================================
+
+\begin{itemize}
+  \item A nota \textbf{não é determinística}: gosto, época e efeitos de cultura TMDB limitam o teto de $R^2$.
+  \item \textbf{Seleção de filmes}: filtros (\texttt{vote\_count}, receita/orçamento positivos) alteram o domínio de aplicação do modelo.
+  \item \textbf{\emph{Leakage}}: evitou-se usar a média do conjunto inteiro para baseline; o teste não deve participar do ajuste de hiperparâmetros sem validação cruzada.
+\end{itemize}
+
+%==============================================================================
+\section{Conclusão}
+%==============================================================================
+
+O projeto implementou um \emph{pipeline} reprodutível desde o CSV bruto até a comparação de modelos. O \textbf{HistGradientBoosting} apresentou o melhor desempenho no teste entre as alternativas estudadas, com MAE na ordem de \textbf{0{,}4} ponto na escala da nota, representando ganho substancial em relação ao baseline. A análise exploratória, as métricas e os gráficos de resíduo sustentam a discussão técnica; as tabelas com títulos reais ilustram o comportamento do modelo em casos concretos do \emph{hold-out}.
+
+\vspace{1em}
+\noindent\textbf{Compilação:} \texttt{pdflatex reports/relatorio\_ic\_TMDB.tex}
+
+\end{document}

@@ -1,1 +1,18 @@
-data/raw/TMDB_movie_dataset_v11.csv
+# Dados (grandes; não enviar ao GitHub — baixar/processar localmente)
+data/raw/
+data/processed/*.csv
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Jupyter
+.ipynb_checkpoints/
+
+# LaTeX (artefatos de compilação; mantém o .tex / .pdf se quiseres)
+reports/*.aux
+reports/*.log
+reports/*.out
+reports/*.toc
